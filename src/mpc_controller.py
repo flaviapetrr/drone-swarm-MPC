@@ -87,8 +87,8 @@ class MPCController(BaseControl):
         #
         # The state composes of
         # - pos : [3x1] {m}
-        # - vel : [3x1] {m/s}
         # - quaternions : [3x1] {} - 3 independent
+        # - vel : [3x1] {m/s}
         # - ang_vel : [3x1] p,q,r
         #
         # The gym API gives us
@@ -171,16 +171,20 @@ class MPCController(BaseControl):
     def _computeControl(
         self,
         control_timestep,
+        state,
     ):
+
         for horizon_step in range(self.horizon):
-            self._build_constraints_iter(horizon_step)
-            self._build_costs_iter(horizon_step)
-        self._build_constraints_once()
+            self._build_constraints_iter(horizon_step, state)
+            self._build_costs_iter(horizon_step, state)
+        self._build_constraints_once(state)
 
         problem = cp.Problem(cp.Minimize(self.cost), self.constraints)
         problem.solve(solver=cp.OSQP)
 
         # delta_thrust, tau_roll, tau_pitch, tau_yaw = self.u[:, 0]
+
+        rpms = self._preprocessAction(self.u[:, 0])
 
         return self.u[:, 0]
 
@@ -196,7 +200,7 @@ class MPCController(BaseControl):
 
         return rpms
 
-    def _build_constraints_iter(self, horizon_step):
+    def _build_constraints_iter(self, horizon_step, state):
         """
         Function to build the constraints at each iteration of the MPC horizon
         """
@@ -211,10 +215,11 @@ class MPCController(BaseControl):
             == self.dynamics.next_x(self.x[:, horizon_step], self.u[:, horizon_step])
         ]
 
-    def _build_costs_iter(self, horizon_step):
+    def _build_costs_iter(self, horizon_step, state):
         """
         Function to build the costs at each iteration of the MPC horizon
         """
+
         # End position tracking cost
         self.cost += self.weight_tracking[0, 0] * cp.square(
             self.x[0:3, horizon_step] - self.x_target[0:3]
@@ -222,8 +227,29 @@ class MPCController(BaseControl):
         # Force input cost term
         self.cost += self.weight_input[0, 0] * cp.sum_squares(self.u[:, horizon_step])
 
-    def _build_constraints_once(self):
+    def _build_constraints_once(self, state):
         """
-        Function to build the contraints once at the end of MPC horizon
+        Function to build the contraints once at the end of MPC loop
         """
-        self.constraints += [self.x[:, 0] == np.zeros((12, 1))]
+
+        unpacked_state = self._unpack_state(state)
+
+        self.constraints += [self.x[:, 0] == unpacked_state]
+
+    def _unpack_state(self, state):
+        """
+        This function must unpack the exact state that is used by the MPC controller
+        Note thate BaseAviary organises the state params as such
+        position : [0:3]
+        quaternions : [3:7]
+        rpy : [7:10]
+        velocity : [10:13]
+        angular_velocity : [13:16]
+        last_rpm : [16:20]
+        """
+        res = np.block([[state[0:7], state[10:16]]])
+
+        # Ensure that the shapes are the same
+        assert res.shape == self.x.shape
+
+        return res
