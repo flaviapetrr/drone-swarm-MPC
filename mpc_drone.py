@@ -19,6 +19,8 @@ from scipy.spatial.transform import Rotation
 from scipy.linalg import expm
 from mpc.drone_model import get_params, obs_to_state, continuous_model, input_scale, discretize
 from mpc.mixer import allocation_matrix, u_to_rpm, motor_limits
+from mpc.controller import MPC
+import config as cfg
 
 DEFAULT_DRONES = DroneModel("cf2x")
 DEFAULT_NUM_DRONES = 1
@@ -33,60 +35,6 @@ DEFAULT_CONTROL_FREQ_HZ = 48
 DEFAULT_DURATION_SEC = 12
 DEFAULT_OUTPUT_FOLDER = 'results'
 DEFAULT_COLAB = False
-
-#MPC Settings
-
-DT_MPC = 0.05   # [s]
-N_MPC = 40
-MAX_TILT_DEG = 15.0 # linear model only valid near hover
-
-# ---- Mission
-HOVER_POS = np.array([0.0, 0.0, 1.0])   # [m] phase 1: climb to here and hover
-REF_POS = np.array([1.0, 0.5, 1.0])   # [m] phase 2: go here after hovering
-SETTLE_TOL = 0.05                     # [m] how close in meters to switch to phase 2
-SETTLE_VEL = 0.1                      # [m/s] how slowly to be considered settled
-SETTLE_SEC = 1.0                      # [s] lenght of time to be considered settled
-
-
-class MPC:
-    def __init__(self, P, dt=DT_MPC, N=N_MPC, w_pos=10., w_vel=1., w_att=1., w_rate=0.1, w_u=1., w_eps=1e3):
-        self.N = N
-        A, B = continuous_model(P)
-        self.u_scale = input_scale(P)
-        Ad, Bd = discretize(A, B, dt, self.u_scale)
-        F_map, f_hover, f_max = motor_limits(P, self.u_scale)
-        xi_max = np.sin(np.radians(MAX_TILT_DEG) / 2)
-
-        self.x = cp.Variable((12, N + 1))
-        self.u = cp.Variable((4, N))
-        eps = cp.Variable((2, N), nonneg=True)
-        self.x0 = cp.Parameter(12)
-        self.target = cp.Parameter(3)
-
-        cost = 0.
-        constraints = [self.x[:, 0] == self.x0]
-        for k in range(N):
-            constraints += [self.x[:, k + 1] == Ad @ self.x[:, k] + Bd @ self.u[:, k]]
-            f = f_hover + F_map @ self.u[:, k]
-            constraints += [f >= 0, f <= f_max]
-            constraints += [self.x[6:8, k + 1] <= xi_max + eps[:, k],
-                            self.x[6:8, k + 1] >= -xi_max - eps[:, k]]
-            cost += (w_pos * cp.sum_squares(self.x[0:3, k] - self.target)
-                     + w_vel * cp.sum_squares(self.x[3:6, k])
-                     + w_att * cp.sum_squares(self.x[6:9, k])
-                     + w_rate * cp.sum_squares(self.x[9:12, k])
-                     + w_u * cp.sum_squares(self.u[:, k])
-                     + w_eps * cp.sum_squares(eps[:, k]))
-        self.problem = cp.Problem(cp.Minimize(cost), constraints)
-
-    def solve(self, x0, target):
-        self.x0.value = x0
-        self.target.value = target
-        self.problem.solve(solver=cp.OSQP, warm_start=True)
-        if self.problem.status not in ("optimal", "optimal_inaccurate"):
-            print("[MPC] solve failed, falling back to hover:", self.problem.status)
-            return np.zeros(4), None
-        return self.u.value[:, 0] * self.u_scale, self.x.value[0:3, :]
 
 def run(
         drone=DEFAULT_DRONES,
@@ -136,10 +84,10 @@ def run(
 
     #### MPC controller ########################################
     P = get_params(env)
-    mpc = MPC(P)
+    mpc = MPC(P, dt=cfg.DT_MPC, N=cfg.N_MPC, max_tilt_deg=cfg.MAX_TILT_DEG, **cfg.MPC_WEIGHTS)
 
     #### Run the simulation ####################################
-    target = HOVER_POS #current MPC target
+    target = cfg.HOVER_POS #current MPC target
     phase = 1 #1 for hovering, 2 for going to ref
     settled_steps = 0 #how many consecutive steps drone has been steady
     action = np.full((1, 4), P["hover_rpm"])
@@ -154,12 +102,12 @@ def run(
 
         #### Phase logic: hover first, then go to the reference ####
         if phase == 1:
-            arrived = (np.linalg.norm(x_now[0:3] - HOVER_POS) < SETTLE_TOL
-                       and np.linalg.norm(x_now[3:6]) < SETTLE_VEL)
+            arrived = (np.linalg.norm(x_now[0:3] - cfg.HOVER_POS) < cfg.SETTLE_TOL
+                       and np.linalg.norm(x_now[3:6]) < cfg.SETTLE_VEL)
             settled_steps = settled_steps + 1 if arrived else 0
-            if settled_steps >= SETTLE_SEC * env.CTRL_FREQ:
+            if settled_steps >= cfg.SETTLE_SEC * env.CTRL_FREQ:
                 phase = 2
-                target = REF_POS
+                target = cfg.REF_POS
                 print(f"t = {i / env.CTRL_FREQ:.2f} s: hover reached, going to the reference position")
 
         u, plan = mpc.solve(x_now, target)
