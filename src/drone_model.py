@@ -4,25 +4,18 @@ import numpy as np
 
 
 class OurModel(CtrlAviary):  # type: ignore[misc]
-    def __init__(
-        self,
-        *args,
-        **kwargs,
-        # drone_model: DroneModel = DroneModel.CF2X,
-        # num_drones: int = 1,
-        # neighbourhood_radius: float = np.inf,
-        # initial_xyzs=None,
-        # initial_rpys=None,
-        # physics: Physics = Physics.PYB,
-        # pyb_freq: int = 240,
-        # ctrl_freq: int = 240,
-        # gui=False,
-        # record=False,
-        # obstacles=False,
-        # user_debug_gui=True,
-        # vision_attributes=False,
-        # output_folder="results",
-    ):
+    def __init__(self, *args, **kwargs):
+        self._init_done = False
+        self._video_started = False
 
-        # WARNING: THE ctrl_freq should match the discretization of the MPC Controller (the dt of the controller in Hz)
         super().__init__(*args, **kwargs)
+
+        self._init_done = True
+
+    def _startVideoRecording(self):
+        # The parent calls this from __init__() and from every reset().
+        # Skip the constructor call and any call after the first recording.
+        if not self._init_done or self._video_started:
+            return
+        self._video_started = True
+        super()._startVideoRecording()
