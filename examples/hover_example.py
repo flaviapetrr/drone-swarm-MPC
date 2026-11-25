@@ -1,7 +1,9 @@
 import time
 import sys
 import os
+from typing import Sequence
 import numpy as np
+import cvxpy as cp
 
 from gym_pybullet_drones.envs import CtrlAviary
 from gym_pybullet_drones.utils.enums import DroneModel, Physics
@@ -11,9 +13,10 @@ from gym_pybullet_drones.utils.Logger import Logger
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.drone_model import OurModel
 from src.mpc_controller import MPCController
-
-
 import pybullet as p
+
+# importing the rules
+import examples.rules.hover as hover
 
 
 def draw_prediction_points(client_id, positions, debug_item_ids):
@@ -41,11 +44,12 @@ SIMULATION_FREQ_HZ = 240
 CONTROL_FREQ_HZ = 48
 DURATION_SEC = 3
 TARGET_POS = np.array([0.0, 0.0, 2.0])
+HORIZON = 10
 
 initial_xyzs = np.array([[0.0, 0.0, 0.1]])
 initial_rpys = np.zeros((NUM_DRONES, 3))
 
-env = CtrlAviary(
+env = OurModel(
     drone_model=DRONE,
     num_drones=NUM_DRONES,
     initial_xyzs=initial_xyzs,
@@ -62,12 +66,15 @@ env = CtrlAviary(
 
 controller = MPCController(
     drone_model=DRONE,
-    horizon=10,
+    horizon=HORIZON,
     dt=env.CTRL_TIMESTEP,
     min_rpm=0.0,
     max_rpm=env.MAX_RPM,
     hover_rpm=env.HOVER_RPM,
 )
+
+# Register the scenario once.
+hover.apply(controller, target_pos=TARGET_POS, horizon=HORIZON)
 
 
 logger = Logger(
