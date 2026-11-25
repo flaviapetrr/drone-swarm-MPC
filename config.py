@@ -21,3 +21,9 @@ REF_POS = np.array([1.0, 0.5, 1.0])     # [m] phase 2: go here after hovering
 SETTLE_TOL = 0.05                       # [m] closer than this to the hover point ...
 SETTLE_VEL = 0.1                        # [m/s] ... and slower than this ...
 SETTLE_SEC = 1.0                        # [s] ... continuously for this long = "arrived"
+
+# ---- Simulation
+SIM_FREQ_HZ = 240                       # [Hz] physics rate
+CTRL_FREQ_HZ = 48                       # [Hz] how often the MPC runs
+DURATION_SEC = 12                       # [s] length of the run
+INIT_POS = np.array([0.0, 0.0, 0.1])    # [m] start position, 10 cm above the ground
