@@ -1,8 +1,15 @@
+from collections.abc import Callable, Iterable, Sequence
+
 from gym_pybullet_drones.control.BaseControl import BaseControl
 from gym_pybullet_drones.utils.enums import DroneModel
 
 import cvxpy as cp
 import numpy as np
+
+ConstraintRule = Callable[
+    ["MPCController", int], cp.Constraint | Sequence[cp.Constraint]
+]
+CostRule = Callable[["MPCController", int], cp.Expression]
 
 
 class MPCDynamics:
@@ -156,12 +163,13 @@ class MPCController(BaseControl):
         )
 
         # [position, q_xyz, velocity, pqr].
-        self.x = cp.Variable((12, self.horizon + 1))
+        self._x = cp.Variable((12, self.horizon + 1))
         # [delta_thrust, roll_torque, pitch_torque, yaw_torque]
-        self.u = cp.Variable((4, self.horizon))
+        self._u = cp.Variable((4, self.horizon))
 
-        self.weight_tracking = 1.0
-        self.weight_input = 0.2
+        self._constraint_rules: list[tuple[ConstraintRule, list[int]]] = []
+        self._cost_rules: list[tuple[CostRule, list[int]]] = []
+
         self.reset()
 
     def reset(self):
@@ -203,20 +211,11 @@ class MPCController(BaseControl):
                 f"({control_timestep})"
             )
 
-        self.cost = 0
-        self.constraints = []
+        self.cost: cp.Expression = cp.Constant(0.0)
+        self.constraints: list[cp.Constraint] = []
 
-        self._build_constraints_once(
-            cur_pos=cur_pos,
-            cur_quat=cur_quat,
-            cur_vel=cur_vel,
-            cur_ang_vel=cur_ang_vel,
-        )
-        self._build_costs_once(target_pos=target_pos)
-
-        for k in range(self.horizon):
-            self._build_constraints_iter(k)
-            self._build_costs_iter(k, target_pos=target_pos)
+        self._add_core_constraints(cur_pos, cur_quat, cur_vel, cur_ang_vel)
+        self._apply_rules()
 
         problem = cp.Problem(cp.Minimize(self.cost), self.constraints)
         problem.solve(solver=cp.OSQP)
@@ -247,44 +246,30 @@ class MPCController(BaseControl):
         )
         return np.sqrt(motor_forces / self.KF)
 
-    def _build_constraints_iter(self, horizon_step, *args, **kwargs):
-        k = horizon_step
-
-        self.constraints += [
-            self.x[0:3, k] <= np.array([20.0, 10.0, 20.0]),
-            self.x[0:3, k] >= np.array([-20.0, -10.0, -20.0]),
-        ]
-
-        motor_force_delta = self.MOTOR_FORCE_FROM_WRENCH @ self.u[:, k]
-        motor_forces = self.HOVER_FORCE_PER_MOTOR + motor_force_delta
-
-        self.constraints += [
-            motor_forces >= self.MIN_MOTOR_FORCE,
-            motor_forces <= self.MAX_MOTOR_FORCE,
-            self.x[:, k + 1] == self.dynamics.next_x(self.x[:, k], self.u[:, k]),
-        ]
-
-    def _build_costs_iter(self, horizon_step, *args, **kwargs):
-        target = np.asarray(self._required_kwarg(kwargs, "target_pos")).reshape(3)
-
-        self.cost += self.weight_tracking * cp.sum_squares(
-            self.x[0:3, horizon_step] - target
+    # Core constraints that every scenario relies on
+    def _add_core_constraints(self, cur_pos, cur_quat, cur_vel, cur_ang_vel):
+        x0 = np.concatenate(
+            [
+                np.asarray(cur_pos, dtype=float).reshape(3),
+                np.asarray(cur_quat, dtype=float).reshape(3),
+                np.asarray(cur_vel, dtype=float).reshape(3),
+                np.asarray(cur_ang_vel, dtype=float).reshape(3),
+            ]
         )
-        self.cost += self.weight_input * cp.sum_squares(self.u[:, horizon_step])
+        self.constraints.append(self._x[:, 0] == x0)
 
-    def _build_costs_once(self, *args, **kwargs):
-        target = np.asarray(self._required_kwarg(kwargs, "target_pos")).reshape(3)
-
-        self.cost += self.weight_tracking * cp.sum_squares(self.x[0:3, -1] - target)
-
-    def _build_constraints_once(self, *args, **kwargs):
-        cur_pos = np.asarray(self._required_kwarg(kwargs, "cur_pos")).reshape(3)
-        quat_vec = np.asarray(self._required_kwarg(kwargs, "cur_quat")).reshape(3)
-        cur_vel = np.asarray(self._required_kwarg(kwargs, "cur_vel")).reshape(3)
-        cur_ang_vel = np.asarray(self._required_kwarg(kwargs, "cur_ang_vel")).reshape(3)
-
-        x0 = np.concatenate([cur_pos, quat_vec, cur_vel, cur_ang_vel])
-        self.constraints.append(self.x[:, 0] == x0)
+        for k in range(self.horizon):
+            self.constraints.append(
+                self._x[:, k + 1] == self.dynamics.next_x(self._x[:, k], self._u[:, k])
+            )
+            motor_forces = (
+                self.HOVER_FORCE_PER_MOTOR
+                + self.MOTOR_FORCE_FROM_WRENCH @ self._u[:, k]
+            )
+            self.constraints += [
+                motor_forces >= self.MIN_MOTOR_FORCE,
+                motor_forces <= self.MAX_MOTOR_FORCE,
+            ]
 
     def _unpack_state(self, state):
         # BaseAviary state: pos[0:3], quaternion[3:7], rpy[7:10],
@@ -295,3 +280,57 @@ class MPCController(BaseControl):
         if name not in kwargs or kwargs[name] is None:
             raise ValueError(f"Missing required keyword argument: {name}")
         return kwargs[name]
+
+    # Properties to protect important variables from being manually changed
+    @property
+    def x(self) -> cp.Variable:
+        return self._x
+
+    @property
+    def u(self) -> cp.Variable:
+        return self._u
+
+    # Named accessors for the various state stuff
+    def pos(self, k: int) -> cp.Expression:
+        return self._x[0:3, k]
+
+    def quat(self, k: int) -> cp.Expression:
+        return self._x[4:7, k]
+
+    def vel(self, k: int) -> cp.Expression:
+        return self._x[7:10, k]
+
+    def ang_vel(self, k: int) -> cp.Expression:
+        return self._x[10:13, k]
+
+    # Functions for adding constraints and costs
+    def add_constraint(self, rule: ConstraintRule, steps: Iterable[int]) -> None:
+        steps = list(steps)
+        self._check_steps(steps, max_k=self.horizon)
+        self._constraint_rules.append((rule, steps))
+
+    def add_cost(self, rule: CostRule, steps: Iterable[int]) -> None:
+        steps = list(steps)
+        self._check_steps(steps, max_k=self.horizon)
+        self._cost_rules.append((rule, steps))
+
+    # Helper functions
+    def _check_steps(self, steps: list[int], max_k: int) -> None:
+        for k in steps:
+            if not 0 <= k <= max_k:
+                raise ValueError(f"step {k} is outside 0..{max_k}")
+
+    def _apply_rules(self) -> None:
+        for rule, steps in self._constraint_rules:
+            for k in steps:
+                result = rule(self, k)
+                items = [result] if isinstance(result, cp.Constraint) else list(result)
+                for c in items:
+                    if not c.variables():
+                        raise ValueError(
+                            f"constraint at step {k} has no decision variables"
+                        )
+                    self.constraints.append(c)
+        for rule, steps in self._cost_rules:
+            for k in steps:
+                self.cost = self.cost + rule(self, k)
