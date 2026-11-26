@@ -221,3 +221,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project
+gym-pybullet-drones/
+
+# Simulation videos
+*.mp4
+*.avi
+*.mov
+*.mkv
+results/recording_*/
