@@ -1,0 +1,4 @@
+simulation:
+  gui: true
+  timestep: 0.01
+  physics: true
