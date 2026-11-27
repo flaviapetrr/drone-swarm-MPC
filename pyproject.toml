@@ -1,0 +1,11 @@
+[project]
+name = "drone-swarm-mpc"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "casadi>=3.8.2",
+    "gym-pybullet-drones",
+]
+
+[tool.uv.sources]
+gym-pybullet-drones = { path = "gym-pybullet-drones", editable = true }
