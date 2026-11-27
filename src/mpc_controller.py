@@ -295,13 +295,13 @@ class MPCController(BaseControl):
         return self._x[0:3, k]
 
     def quat(self, k: int) -> cp.Expression:
-        return self._x[4:7, k]
+        return self._x[3:6, k]
 
     def vel(self, k: int) -> cp.Expression:
-        return self._x[7:10, k]
+        return self._x[6:9, k]
 
     def ang_vel(self, k: int) -> cp.Expression:
-        return self._x[10:13, k]
+        return self._x[9:12, k]
 
     # Functions for adding constraints and costs
     def add_constraint(self, rule: ConstraintRule, steps: Iterable[int]) -> None:

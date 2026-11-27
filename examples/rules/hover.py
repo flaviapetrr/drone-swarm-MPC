@@ -3,10 +3,20 @@ from typing import TYPE_CHECKING
 import numpy as np
 import cvxpy as cp
 
+# IMPORTANT
+# The MPC has some basic constraints already in place. These are:
+# - Initial Conditions constraint (x[0] = x_init = state_O)
+# - Dynamics constraint (x[k+1] = Ax[k] + Bu[k])
+# - Controller input constraints (basically the rpm is capped at a minimum and maximum)
+#
+# This means YOU DO NOT NEED TO IMPLEMENT THEM, if you need to change something lmk
+
 if TYPE_CHECKING:
     from src.mpc_controller import MPCController
 
 
+# Simple bounding box for our drone
+# EVERY FUNCTION MUST HAVE ctrl and step as arguments
 def position_bounds(ctrl: "MPCController", step: int):
     return [
         ctrl.pos(step) <= np.array([20.0, 10.0, 20.0]),
@@ -14,6 +24,7 @@ def position_bounds(ctrl: "MPCController", step: int):
     ]
 
 
+# A distance
 def distance_cost(
     ctrl: "MPCController", step: int, target_pos: np.ndarray, weight: float = 1.0
 ):
